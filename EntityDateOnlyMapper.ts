@@ -1,3 +1,28 @@
+import * as moment from 'moment';
+
+Date.prototype.toStartOfTheDay = function(){
+    if(this != null){
+        var isoString = this.toISOString();
+
+        var arr = isoString.split(/[-T]+/)
+        return new Date(new Date(arr[0] + '-' + arr[1] + '-' + arr[2]).setHours(0, 0, 0, 0) - (moment().utcOffset() * 60 * 1000)); 
+    }                 
+
+    return this;
+};
+
+moment.prototype.toStartOfTheDay = function(){
+    if(this != null){
+        var isoString = this.toISOString();
+        var hrsToAdd = -this.utcOffset()/60;
+
+        var arr = isoString.split(/[-T]+/)
+        return moment(arr[0] + '-' + arr[1] + '-' + arr[2]).add(hrsToAdd, 'hours');
+    }   
+    
+    return null;
+}
+
 import * as _ from 'underscore';
 import { Observable } from 'rxjs';
 
