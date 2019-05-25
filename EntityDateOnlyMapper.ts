@@ -1,69 +1,74 @@
 import * as moment from 'moment';
 
-Date.prototype.toStartOfTheDay = function(){
-    if(this != null){
-        var isoString = this.toISOString();
-
-        var arr = isoString.split(/[-T]+/)
-        return new Date(new Date(arr[0] + '-' + arr[1] + '-' + arr[2]).setHours(0, 0, 0, 0) - (moment().utcOffset() * 60 * 1000)); 
-    }                 
+Date.prototype.addTimezoneOffset = function(){
+    if(this){
+        var _mThis = moment(this);
+        return moment(this).add(_mThis.utcOffset()/60, 'hours').toDate();
+    }
 
     return this;
 };
 
-moment.prototype.toStartOfTheDay = function(){
-    if(this != null){
-        var isoString = this.toISOString();
-        var hrsToAdd = -this.utcOffset()/60;
+Date.prototype.startOfTheDay = function(){
+    if(this)
+        return this.hours(0).minutes(0).seconds(0).add(this.utcOffset()/60, 'hours');    
 
-        var arr = isoString.split(/[-T]+/)
-        return moment(arr[0] + '-' + arr[1] + '-' + arr[2]).add(hrsToAdd, 'hours');
-    }   
-    
-    return null;
+    return this;
+};
+
+moment.prototype.addTimezoneOffset = function(){
+    if(this){
+        return this.add(this.utcOffset()/60, 'hours').toDate();
+    }
+}
+
+moment.prototype.startOfTheDay = function(){
+    if(this){
+        var _moment = moment(this);
+        return _moment.hours(0).minutes(0).seconds(0).add(_moment.utcOffset()/60, 'hours').toDate();
+    }
 }
 
 import * as _ from 'underscore';
 import { Observable } from 'rxjs';
 
-interface EntityDateOnlyMapper{
-    props: string[];
+abstract class EntityDateOnlyMapper{
+    outgoing: string[];    
+    incoming: string[];
     entity: any;
 }
 
 var maps: {[key:string]: EntityDateOnlyMapper} = {};
 
-class VisualTaskDateOnlyMapper implements EntityDateOnlyMapper{
-    props: string[] ;    
-    entity: any;
-
+class VisualTaskDateOnlyMapper extends EntityDateOnlyMapper{
     constructor(){
-        this.props = ['startDate', 'finishDate'];
+        super();
         this.entity = "VisualTask"
+        this.outgoing = ['startDate', 'finishDate'];
+        this.incoming = ['transition'];
     }
 }
 
 maps["VisualTask"] = new VisualTaskDateOnlyMapper();
 
-
 export class DateOnlyApiCaller{
     static callApi(fn: (...any) => any, args?: any[]): Observable<any>{
-        DateOnlyApiCaller.dateOnly(args);
+        DateOnlyApiCaller.dateOnly(false, args);
 
         return new Observable((obs: any) => {
             fn.apply(this, args).subscribe(result => {
-                DateOnlyApiCaller.dateOnly(result)
+                DateOnlyApiCaller.dateOnly(true, result)
                 obs.next(result);
                 obs.complete();
             });
         });
     }
 
-    static dateOnly(args?: any[]){
+    static dateOnly(incoming: boolean, args?: any[]){
         if(args){
             args.forEach(item => {
                 if(item instanceof Array){
-                    DateOnlyApiCaller.dateOnly(item);
+                    DateOnlyApiCaller.dateOnly(incoming, item);
                     return;
                 }
 
@@ -73,9 +78,15 @@ export class DateOnlyApiCaller{
                     var keys = Object.keys(item);
         
                     _.forEach(keys, key => {
-                        if(_map.props.indexOf(key) != -1){
-                            item[key] = item[key].toStartOfTheDay();
-                        }
+                        if(incoming){
+                            if(_map.incoming.indexOf(key) != -1){
+                                item[key] = item[key].addTimezoneOffset();
+                            }
+                        }else{
+                            if(_map.outgoing.indexOf(key) != -1){
+                                item[key] = item[key].startOfTheDay();
+                            }
+                        }                        
                     });
                 }
             });
