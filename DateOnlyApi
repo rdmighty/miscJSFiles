@@ -1,0 +1,799 @@
+/**
+ * Date: 31st May 2019
+ * Author: Rishabh Sharma
+ * Organization: Counterpart Projects
+ * 
+ * Description: 
+ * This api can be used anywhere in the application when entity requires only Date (time truncated).
+ * The api searches in the maps object for the entity defintion and if the definition is found then it 
+ * modifies each date against the property. 
+ * 
+ * Modification process:
+ * The global clock provider is set to UTC. (Startup.cs file on backend side).
+ * When the request is made then each date is set to 12 AM and system's Timezone offset is added to
+ * the date, so that when service-proxy converts each date to (iso) string for the request-body then
+ * it removes the timezone offset. We are left with the date and time is 12 AM. 
+ * 
+ * When the response is received and matching definition is found for the entity then it converts
+ * the date to UTC time and adds Timezone offset to it. This way we have the same date that we had sent to the backend. 
+ */
+
+import * as _ from 'underscore';
+import * as moment from 'moment';
+import { Observable } from 'rxjs';
+import { map } from 'rxjs/operators';
+import { Injectable } from '@angular/core';
+import * as ServiceProxy from '@shared/service-proxies/service-proxies';
+
+// Declarations
+interface IEntityDateOnlyMapper {
+    props: string[];
+}
+
+abstract class EntityDateOnlyMapper implements IEntityDateOnlyMapper {
+    props: string[];
+}
+
+var maps: { [key: string]: EntityDateOnlyMapper } = {};
+
+class ProjectReportDateOnlyMapper extends EntityDateOnlyMapper {
+    constructor() {
+        super();
+        this.props = ['projectReportDue'];
+    }
+}
+
+class OnlyDateDateOnlyMapper extends EntityDateOnlyMapper {
+    constructor() {
+        super();
+        this.props = ['date'];
+    }
+}
+
+class StartDateOnlyMapper extends EntityDateOnlyMapper {
+    constructor(){
+        super();
+        this.props = ['startDate'];
+    }
+}
+
+class TaskDateOnlyMapper extends EntityDateOnlyMapper {
+    constructor() {
+        super();
+        this.props = ['startDate', 'finishDate'];
+    }
+}
+
+class DateRangeOnlyMapper extends EntityDateOnlyMapper {
+    constructor() {
+        super();
+        this.props = ['startDate', 'endDate'];
+    }
+}
+
+class ProjectDateOnlyMapper extends EntityDateOnlyMapper {
+    constructor() {
+        super();
+        this.props = ['startDate', 'endDate', 'budgetEndDate'];
+    }
+}
+
+class EntityWithStartAndDueDateOnlyMapper extends EntityDateOnlyMapper {
+    constructor() {
+        super();
+        this.props = ['startDate', 'dueDate'];
+    }
+}
+
+class ProjectBudgetDateOnlyMapper extends EntityDateOnlyMapper {
+    constructor() {
+        super();
+        this.props = ['endDate', 'dateOfLastUpdate'];
+    }
+}
+
+class MyTaskDtoDateOnlyMapper extends EntityDateOnlyMapper {
+    constructor() {
+        super();
+        this.props = ['finishDate'];
+    }
+}
+
+class ImportWorkplanInputDateOnlyMapper extends EntityDateOnlyMapper {
+    constructor() {
+        super();
+        this.props = ['projectplanStartDate'];
+    }
+}
+
+class RaidRiskDateOnlyMapper extends EntityDateOnlyMapper {
+    constructor() {
+        super();
+        this.props = ['closedDate', 'requiredDate', 'issueStart', 'nextReview'];
+    }
+}
+
+class RaidDependencyDateOnlyMapper extends EntityDateOnlyMapper {
+    constructor() {
+        super();
+        this.props = ['deliveryDate'];
+    }
+}
+
+// Definitions
+maps["VisualTask"] = new TaskDateOnlyMapper();
+maps["KanbanTask"] = maps["VisualTask"];
+maps["WorkplanTask"] = maps["VisualTask"];
+maps["MyAssignment"] = maps["VisualTask"];
+maps["ProjectplanTask"] = maps["VisualTask"];
+maps["RequestplanTask"] = maps["VisualTask"];
+maps["DateRange"] = new DateRangeOnlyMapper();
+maps["MoveTaskInput"] = maps["DateRange"];
+maps["MyTaskDto"] = new MyTaskDtoDateOnlyMapper();
+maps["ProjectDto"] = new ProjectDateOnlyMapper();
+maps["RaidRiskDto"] = new RaidRiskDateOnlyMapper();
+maps["RaidIssueDto"] = maps["RaidRiskDto"];
+maps["ProjectTeamMemberDto"] = maps["VisualTask"];
+maps["CreateOrEditProjectDto"] = maps["ProjectDto"];
+maps["CanAssignmentShiftInput"] = maps["DateRange"];
+maps["CreateOrEditRaidRiskDto"] = maps["RaidRiskDto"];
+maps["ProjectVisualPlanTaskDto"] = maps["VisualTask"];
+maps["CreateOrEditRaidIssueDto"] = maps["RaidRiskDto"];
+maps["MoveTaskToNewDateRangeInput"] = maps["DateRange"];
+maps["CreateOrEditWorkplanTaskDto"] = maps["VisualTask"];
+maps["GetAllProjectsForReportOutput"] = maps["DateRange"];
+maps["ModifiedVisualPlanTaskChanges"] = maps["VisualTask"];
+maps["CreateorEditProjectplanTaskDto"] = maps["VisualTask"];
+maps["CreateOrEditRequestplanTaskDto"] = maps["VisualTask"];
+maps["ProjectBudgetDto"] = new ProjectBudgetDateOnlyMapper();
+maps["CreateOrEditProjectTeamMemberDto"] = maps["VisualTask"];
+maps["RaidDependencyDto"] = new RaidDependencyDateOnlyMapper();
+maps["CreateOrEditProjectBudgetDto"] = maps["ProjectBudgetDto"];
+maps["ShiftAassignmentToNewDateRangeInput"] = maps["DateRange"];
+maps["ProjectMetricUpdateDto"] = new OnlyDateDateOnlyMapper();
+maps["CreateOrEditRaidDependencyDto"] = maps["RaidDependencyDto"];
+maps["ProjectBudgetSpendItemDto"] = maps["ProjectMetricUpdateDto"];
+maps["ProjectPublishedReport"] = new ProjectReportDateOnlyMapper();
+maps["ImportWorkplanInput"] = new ImportWorkplanInputDateOnlyMapper();
+maps["ProjectVisualPlanPredecessorInput"] = new StartDateOnlyMapper();
+maps["CreateOrEditMetricUpdateDto"] = maps["ProjectBudgetSpendItemDto"];
+maps["CreateOrEditProjectBudgetSpendItemDto"] = maps["ProjectBudgetSpendItemDto"];
+maps["GetAllMyProjectsForUserProfileOutput"] = new EntityWithStartAndDueDateOnlyMapper();
+
+// Utility
+var utils = {
+    readValueAtNav: function (obj, nav): any {
+        if (Array.isArray(nav)) {
+            if (nav.length == 1 && obj)
+                return obj[nav[0]];
+            else if (nav.length > 1 && obj)
+                return utils.readValueAtNav(obj[nav[0]], nav.splice(1));
+            else
+                return null;
+        }
+        else
+            return utils.readValueAtNav(obj, nav.split('.'));
+    },
+    assignValueAtNav: function (obj, nav, value) {
+        if (Array.isArray(nav)) {
+            if (nav.length == 1 && obj)
+                return obj[nav[0]] = value;
+            else if (nav.length > 1 && obj)
+                return utils.assignValueAtNav(obj[nav[0]], nav.splice(1), value);
+        }
+        else
+            return utils.assignValueAtNav(obj, nav.split('.'), value);
+    },
+    objectKeysWithNav: function (obj, suffix = null, arr = null, includeOnlyMomentProp = true) {
+        arr = arr || [];
+        suffix = suffix ? suffix : '';
+
+        if (obj instanceof Object) {
+            var keys = Object.keys(obj);
+            for (var i = 0; i < keys.length; i++) {
+                if (obj[keys[i]] instanceof Object && !moment.isMoment(obj[keys[i]])) {
+                    utils.objectKeysWithNav(obj[keys[i]], suffix ? suffix + "." + keys[i] : keys[i], arr);
+                } else {
+                    if (!includeOnlyMomentProp || includeOnlyMomentProp && obj[keys[i]] instanceof moment)
+                        arr.push(suffix ? suffix + "." + keys[i] : keys[i]);
+                }
+            }
+        }
+        return arr;
+    }
+};
+
+// DaetOnly Apis
+type DateOnlyApiMoment = moment.Moment | string | Date | null | undefined;
+
+export class DateOnlyApi {
+    static callApi<T>(fnName: string, args?: any[], parseDateParams: boolean = false): Observable<T> {
+        DateOnlyApi.dateOnly(false, args);
+
+        // Parse each date param to equivalent local time
+        parseDateParams && DateOnlyApi.parseDateParams(args);
+
+        return new Observable((obs: any) => {
+            this[fnName].apply(this, args).subscribe(result => {
+                DateOnlyApi.dateOnly(true, [result])
+                obs.next(result);
+                obs.complete();
+            }, (err) => {
+                obs.error(err);
+                obs.complete();
+            });
+        });
+    }
+
+    // It should be necessarily be an array for reference reason
+    static parseDateParams(args?: any[]) {
+
+        // Outgoing params
+        args.forEach((item, index) => {
+            if (item && ((item instanceof moment) || (item instanceof Date)))
+                args[index] = (<any>item).startOfTheDayWithOffset();
+        });
+    }
+
+    static dateOnly(incoming: boolean, args?: any | any[]) {
+        if (args) {
+            if (args instanceof Array) {
+                args.forEach(item => {
+                    DateOnlyApi.dateOnly(incoming, item);
+                });
+            } else {
+                if (args instanceof Object) {
+                    var _map = maps[args.constructor.name];
+
+                    if (_map) {
+                        _map.props.forEach(prop => {
+                            var currentValue = utils.readValueAtNav(args, prop);
+
+                            if (incoming)
+                                currentValue && utils.assignValueAtNav(args, prop, utils.readValueAtNav(args, prop).maintainUtc());
+                            else
+                                currentValue && utils.assignValueAtNav(args, prop, utils.readValueAtNav(args, prop).startOfTheDayWithOffset());
+                        });
+                    } else {
+                        if (args && !(args instanceof moment)) {
+                            var keys = Object.keys(args);
+
+                            _.forEach(keys, key => {
+                                if ((args[key] instanceof Object) && !(args[key] instanceof moment))
+                                    DateOnlyApi.dateOnly(incoming, args[key]);
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    static dateOnlyApi(incoming: boolean, entity: any, _map: EntityDateOnlyMapper){
+        if (_map) {
+            _map.props.forEach(prop => {
+                var currentValue = utils.readValueAtNav(entity, prop);
+
+                if (incoming)
+                    currentValue && utils.assignValueAtNav(entity, prop, utils.readValueAtNav(entity, prop).maintainUtc());
+                else
+                    currentValue && utils.assignValueAtNav(entity, prop, utils.readValueAtNav(entity, prop).startOfTheDayWithOffset());
+            });
+        } else {
+            if (entity && !(entity instanceof moment)) {
+                var keys = Object.keys(entity);
+
+                _.forEach(keys, key => {
+                    if ((entity[key] instanceof Object) && !(entity[key] instanceof moment))
+                        DateOnlyApi.dateOnly(incoming, entity[key]);
+                });
+            }
+        }
+    }
+
+    static moment = class {
+
+        private static isInvalid(_date: DateOnlyApiMoment): boolean {
+            return (!_date || !moment.isMoment(_date));
+        }
+
+        static isSame(date1: DateOnlyApiMoment, date2: DateOnlyApiMoment): boolean {
+            var m1 = moment(date1);
+            var m2 = moment(date2);
+
+            if (DateOnlyApi.moment.isInvalid(m1) || DateOnlyApi.moment.isInvalid(m2))
+                return false;
+
+            return ((m1.local().date() == m2.local().date()) && (m1.local().month() == m2.local().month()) && (m1.local().year() == m2.local().year()));
+        }
+
+        private static sameYear(date1: DateOnlyApiMoment, date2: DateOnlyApiMoment): boolean {
+            var m1 = moment(date1);
+            var m2 = moment(date2);
+
+            if (DateOnlyApi.moment.isInvalid(m1) || DateOnlyApi.moment.isInvalid(m2))
+                return false;
+
+            return m1.local().year() == m2.local().year()
+        }
+
+        private static sameMonth(date1: DateOnlyApiMoment, date2: DateOnlyApiMoment): boolean {
+            var m1 = moment(date1);
+            var m2 = moment(date2);
+
+            if (DateOnlyApi.moment.isInvalid(m1) || DateOnlyApi.moment.isInvalid(m2))
+                return false;
+
+            return m1.local().month() == m2.local().month()
+        }
+
+        static isBefore(date1: DateOnlyApiMoment, date2: DateOnlyApiMoment): boolean {
+            var m1 = moment(date1);
+            var m2 = moment(date2);
+
+            if (DateOnlyApi.moment.isInvalid(m1) || DateOnlyApi.moment.isInvalid(m2))
+                return false;
+
+            if ((m1.local().year() < m2.local().year()) ||
+                (DateOnlyApi.moment.sameYear(date1, date2) && (m1.local().month() < m2.local().month())) ||
+                (DateOnlyApi.moment.sameYear(date1, date2) && DateOnlyApi.moment.sameMonth(date1, date2) && (m1.local().date() < m2.local().date())))
+                return true;
+
+            return false;
+        }
+
+        static isAfter(date1: DateOnlyApiMoment, date2: DateOnlyApiMoment): boolean {
+            var m1 = moment(date1);
+            var m2 = moment(date2);
+
+            if (DateOnlyApi.moment.isInvalid(m1) || DateOnlyApi.moment.isInvalid(m2))
+                return false;
+
+            if ((m1.local().year() > m2.local().year()) ||
+                (DateOnlyApi.moment.sameYear(date1, date2) && (m1.local().month() > m2.local().month())) ||
+                (DateOnlyApi.moment.sameYear(date1, date2) && DateOnlyApi.moment.sameMonth(date1, date2) && (m1.local().date() > m2.local().date())))
+                return true;
+
+            return false;
+        }
+
+        static isSameOrBefore(date1: DateOnlyApiMoment, date2: DateOnlyApiMoment): boolean {
+            var m1 = moment(date1);
+            var m2 = moment(date2);
+
+            if (DateOnlyApi.moment.isInvalid(m1) || DateOnlyApi.moment.isInvalid(m2))
+                return false;
+
+            if (DateOnlyApi.moment.isSame(date1, date2) || DateOnlyApi.moment.isBefore(date1, date2))
+                return true;
+
+            return false;
+        }
+
+        static isSameOrAfter(date1: DateOnlyApiMoment, date2: DateOnlyApiMoment): boolean {
+            var m1 = moment(date1);
+            var m2 = moment(date2);
+
+            if (DateOnlyApi.moment.isInvalid(m1) || DateOnlyApi.moment.isInvalid(m2))
+                return false;
+
+            if (DateOnlyApi.moment.isSame(date1, date2) || DateOnlyApi.moment.isAfter(date1, date2))
+                return true;
+
+            return false;
+        }
+    }
+}
+
+
+class DateOnlyUtility{
+    static incoming(date: DateOnlyApiMoment): DateOnlyApiMoment{
+        if(date)
+            return (<any>date).maintainUtc();
+        return date;
+    }
+
+    static outgoing(date: DateOnlyApiMoment): DateOnlyApiMoment{
+        if(date)
+            return (<any>date).startOfTheDayWithOffset();
+        return date;
+    }
+}
+
+class CreateOrEditProjectDtoDateOnly {
+    static incoming(data: ServiceProxy.CreateOrEditProjectDto){
+        if(data){
+            (<any>data).endDate = DateOnlyUtility.incoming(data.endDate);
+            (<any>data).startDate = DateOnlyUtility.incoming(data.startDate);
+            (<any>data).budgetEndDate = DateOnlyUtility.incoming(data.budgetEndDate);
+        }        
+    }
+
+    static outgoing(data: ServiceProxy.CreateOrEditProjectDto){
+        if (data) {
+            (<any>data).endDate = DateOnlyUtility.outgoing(data.endDate);
+            (<any>data).startDate = DateOnlyUtility.outgoing(data.startDate);
+            (<any>data).budgetEndDate = DateOnlyUtility.outgoing(data.budgetEndDate);
+        }
+    }
+}
+
+class CreateOrEditRequestplanTaskDtoDateOnly{
+    static incoming(data: ServiceProxy.CreateOrEditRequestplanTaskDto){
+        if(data){
+            (<any>data).startDate = DateOnlyUtility.incoming(data.startDate);
+            (<any>data).finishDate = DateOnlyUtility.incoming(data.finishDate);
+        }        
+    }
+
+    static outgoing(data: ServiceProxy.CreateOrEditRequestplanTaskDto){
+        if (data) {
+            (<any>data).startDate = DateOnlyUtility.outgoing(data.startDate);
+            (<any>data).finishDate = DateOnlyUtility.incoming(data.finishDate);
+        }
+    }
+}
+
+class CreateOrEditProjectplanTaskDtoDateOnly{
+    static incoming(data: ServiceProxy.CreateorEditProjectplanTaskDto){
+        if(data){
+            (<any>data).startDate = DateOnlyUtility.incoming(data.startDate);
+            (<any>data).finishDate = DateOnlyUtility.incoming(data.finishDate);
+        }        
+    }
+
+    static outgoing(data: ServiceProxy.CreateorEditProjectplanTaskDto){
+        if (data) {
+            (<any>data).startDate = DateOnlyUtility.outgoing(data.startDate);
+            (<any>data).finishDate = DateOnlyUtility.incoming(data.finishDate);
+        }
+    }
+}
+
+class KanbanTaskDateOnly{
+    static incoming(data: ServiceProxy.KanbanTask){
+        if(data){
+            (<any>data).startDate = DateOnlyUtility.incoming(data.startDate);
+            (<any>data).finishDate = DateOnlyUtility.incoming(data.finishDate);
+        }
+    }
+
+    static outgoing(data: ServiceProxy.KanbanTask){
+        if(data){
+            (<any>data).startDate = DateOnlyUtility.outgoing(data.startDate);
+            (<any>data).finishDate = DateOnlyUtility.outgoing(data.finishDate);
+        }
+    }
+}
+
+class KanbanFilterOutputDateOnly{
+    static incoming(data: ServiceProxy.KanbanFilterOutput) {
+        if (data) {
+            data.unassignedProjectTasks && data.unassignedProjectTasks.forEach(item => {
+                KanbanTaskDateOnly.incoming(item);
+            });
+
+            data.unassignedRequestTasks && data.unassignedRequestTasks.forEach(item => {
+                KanbanTaskDateOnly.incoming(item);
+            });
+        }
+    }
+
+    static outgoing(data: ServiceProxy.KanbanFilterOutput) {
+        if (data) {
+            data.unassignedProjectTasks && data.unassignedProjectTasks.forEach(item => {
+                KanbanTaskDateOnly.outgoing(item);
+            });
+
+            data.unassignedRequestTasks && data.unassignedRequestTasks.forEach(item => {
+                KanbanTaskDateOnly.outgoing(item);
+            });
+        }
+    }
+}
+
+class KanbanFilterInputDateOnly{
+    static incoming(data: ServiceProxy.KanbanFilterInput) {
+        if (data) {
+            (<any>data).endDate = DateOnlyUtility.incoming(data.endDate);
+            (<any>data).startDate = DateOnlyUtility.incoming(data.startDate);
+        }
+    }
+
+    static outgoing(data: ServiceProxy.KanbanFilterInput) {
+        if (data) {
+            (<any>data).endDate = DateOnlyUtility.outgoing(data.endDate);
+            (<any>data).startDate = DateOnlyUtility.outgoing(data.startDate);
+        }
+    }
+}
+
+class KanbanCardMovementDateOnly{
+    static incoming(data: ServiceProxy.KanbanCardMovement){
+        data && KanbanFilterInputDateOnly.incoming(data.filter);
+    }
+
+    static outgoing(data: ServiceProxy.KanbanCardMovement){
+        data && KanbanFilterInputDateOnly.outgoing(data.filter);
+    }
+}
+
+class MyAssignmentDateOnly{
+    static incoming(data: ServiceProxy.MyAssignment | ServiceProxy.MyAssignment[]) {
+        if (data) {
+            if(data instanceof Array){
+                data.forEach(item => {
+                    MyAssignmentDateOnly.incoming(data);
+                });
+            }else{
+                (<any>data).startDate = DateOnlyUtility.incoming(data.startDate);
+                (<any>data).finishDate = DateOnlyUtility.incoming(data.finishDate);
+            }           
+        }
+    }
+
+    static outgoing(data: ServiceProxy.MyAssignment | ServiceProxy.MyAssignment[]) {
+        if (data) {
+            if(data instanceof Array){
+                data.forEach(item => {
+                    MyAssignmentDateOnly.outgoing(data);
+                });
+            }else{
+                (<any>data).startDate = DateOnlyUtility.outgoing(data.startDate);
+                (<any>data).finishDate = DateOnlyUtility.outgoing(data.finishDate);
+            }            
+        }
+    }
+}
+
+class GetAllMyProjectsForUserProfileOutputDateOnly{
+    static incoming(data: ServiceProxy.GetAllMyProjectsForUserProfileOutput) {
+        if (data) {
+            (<any>data).dueDate = DateOnlyUtility.incoming(data.dueDate);
+            (<any>data).startDate = DateOnlyUtility.incoming(data.startDate);
+        }
+    }
+
+    static outgoing(data: ServiceProxy.GetAllMyProjectsForUserProfileOutput) {
+        if (data) {
+            (<any>data).dueDate = DateOnlyUtility.outgoing(data.dueDate);
+            (<any>data).startDate = DateOnlyUtility.outgoing(data.startDate);
+        }
+    }
+}
+
+class RaidRiskDtoDateOnly{
+    static incoming(data: ServiceProxy.RaidRiskDto) {
+        if (data) {
+            (<any>data).closedDate = DateOnlyUtility.incoming(data.closedDate);
+            (<any>data).issueStart = DateOnlyUtility.incoming(data.issueStart);
+            (<any>data).nextReview = DateOnlyUtility.incoming(data.nextReview);
+            (<any>data).requiredDate = DateOnlyUtility.incoming(data.requiredDate);
+        }
+    }
+
+    static outgoing(data: ServiceProxy.RaidRiskDto) {
+        if (data) {
+            (<any>data).closedDate = DateOnlyUtility.outgoing(data.closedDate);
+            (<any>data).issueStart = DateOnlyUtility.outgoing(data.issueStart);
+            (<any>data).nextReview = DateOnlyUtility.outgoing(data.nextReview);
+            (<any>data).requiredDate = DateOnlyUtility.outgoing(data.requiredDate);
+        }
+    }
+}
+
+class MyTaskDtoDateOnly{
+    static incoming(data: ServiceProxy.MyTaskDto) {
+        if (data) {
+            (<any>data).finishDate = DateOnlyUtility.incoming(data.finishDate);            
+        }
+    }
+
+    static outgoing(data: ServiceProxy.MyTaskDto) {
+        if (data) {
+            (<any>data).finishDate = DateOnlyUtility.outgoing(data.finishDate); 
+        }
+    }
+}
+
+class CreateOrEditProjectBudgetDtoDateOnly{
+    static incoming(data: ServiceProxy.CreateOrEditProjectBudgetDto){
+        if(data){
+            (<any>data).endDate = DateOnlyUtility.incoming(data.endDate);            
+        }        
+    }
+
+    static outgoing(data: ServiceProxy.CreateOrEditProjectBudgetDto){
+        if (data) {
+            (<any>data).endDate = DateOnlyUtility.outgoing(data.endDate);
+        }
+    }
+}
+
+class GetProjectBudgetSpendItemForEditOutputDateOnly{
+    static incoming(data: ServiceProxy.GetProjectBudgetSpendItemForEditOutput){
+        if(data){
+            (<any>data).date = DateOnlyUtility.incoming(data.date);            
+        }        
+    }
+
+    static outgoing(data: ServiceProxy.GetProjectBudgetSpendItemForEditOutput){
+        if (data) {
+            (<any>data).date = DateOnlyUtility.outgoing(data.date);
+        }
+    }
+}
+
+class CreateOrEditProjectBudgetSpendItemDtoDateOnly{
+    static incoming(data: ServiceProxy.CreateOrEditProjectBudgetSpendItemDto){
+        if(data){
+            (<any>data).date = DateOnlyUtility.incoming(data.date);            
+        }        
+    }
+
+    static outgoing(data: ServiceProxy.CreateOrEditProjectBudgetSpendItemDto){
+        if (data) {
+            (<any>data).date = DateOnlyUtility.outgoing(data.date);
+        }
+    }
+}
+
+@Injectable()
+export class ProjectsDateOnlyService{
+    constructor(
+        private _projectsServiceProxy: ServiceProxy.ProjectsServiceProxy
+    ){
+        
+    }
+
+    createOrEdit(input: ServiceProxy.CreateOrEditProjectDto | null | undefined): Observable<number> {
+        CreateOrEditProjectDtoDateOnly.outgoing(input);
+        return this._projectsServiceProxy.createOrEdit(input);        
+    }
+}
+
+@Injectable()
+export class KanbanDateOnlyService{
+    constructor(
+        private _kanbanService: ServiceProxy.KanbanServiceProxy
+    ){
+
+    }
+
+    getKanbanOutput(page: number | null | undefined, itemsPerPage: number | null | undefined, userIds: number[] | null | undefined, endDate: moment.Moment | null | undefined, resourceTypeId: number | null | undefined, startDate: moment.Moment | null | undefined, taskTypes: string[] | null | undefined, organizationUnitIds: number[] | null | undefined): Observable<ServiceProxy.KanbanFilterOutput> {
+        return this._kanbanService.getKanbanOutput(page, itemsPerPage, userIds, DateOnlyUtility.outgoing(endDate) as any, resourceTypeId, DateOnlyUtility.outgoing(startDate) as any, taskTypes, organizationUnitIds).pipe(map(result => {
+            KanbanFilterOutputDateOnly.incoming(result);
+            return result;
+        }));        
+    }
+
+    processCardMovement(input: ServiceProxy.KanbanCardMovement | null | undefined): Observable<ServiceProxy.KanbanCardMovementOutput>{
+        KanbanCardMovementDateOnly.outgoing(input);
+        return this._kanbanService.processCardMovement(input).pipe(map(result => {
+            KanbanFilterOutputDateOnly.incoming(result.output);
+            return result;
+        }));
+    }
+}
+
+@Injectable()
+export class UserProfileDateOnlyService{
+    constructor(
+        private _userProfileService: ServiceProxy.UserProfileServiceProxy
+    ){
+
+    }
+
+    getMyAssignments(userId: number | null | undefined): Observable<ServiceProxy.MyAssignment[]>{
+        return this._userProfileService.getMyAssignments(userId).pipe(map(result => {
+            MyAssignmentDateOnly.incoming(result);
+            return result;
+        }));
+    }
+
+    getAllMyProjectsForUserProfile(userId: number | null | undefined, assignedToMe: boolean | null | undefined, sorting: string | null | undefined, skipCount: number | null | undefined, maxResultCount: number | null | undefined): Observable<ServiceProxy.PagedResultDtoOfGetAllMyProjectsForUserProfileOutput> {
+        return this._userProfileService.getAllMyProjectsForUserProfile(userId, assignedToMe, sorting, skipCount, maxResultCount).pipe(map(result => {
+            result.items && result.items.forEach((item: ServiceProxy.GetAllMyProjectsForUserProfileOutput) => {
+                GetAllMyProjectsForUserProfileOutputDateOnly.incoming(item);
+            });            
+            return result;
+        }));
+    }
+
+    getRequestplanTaskForUpdate(id: number | null | undefined): Observable<ServiceProxy.GetRequestplanTaskForUpdateDto>{
+        return this._userProfileService.getRequestplanTaskForUpdate(id).pipe(map(result => {
+            CreateOrEditRequestplanTaskDtoDateOnly.incoming(result.requestplanTask);
+            return result;
+        }));
+    }
+
+    updateRequestplanTask(input: ServiceProxy.CreateOrEditRequestplanTaskDto | null | undefined): Observable<void>{
+        CreateOrEditRequestplanTaskDtoDateOnly.outgoing(input);
+        return this._userProfileService.updateRequestplanTask(input);
+    }
+
+    getProjectPlanTaskForUpdate(id: number | null | undefined): Observable<ServiceProxy.GetProjectPlanTaskForUpdateDto>{
+        return this._userProfileService.getProjectPlanTaskForUpdate(id).pipe(map(result => {
+            CreateOrEditProjectplanTaskDtoDateOnly.incoming(result.projectplanTask);
+            return result;
+        }));
+    }
+
+    updateProjectPlanTask(input: ServiceProxy.CreateorEditProjectplanTaskDto | null | undefined): Observable<void>{
+        CreateOrEditProjectplanTaskDtoDateOnly.outgoing(input);
+        return this._userProfileService.updateProjectPlanTask(input).pipe(map(result => {            
+            return result;
+        }));
+    }
+
+    getAllTasksWithinRange(endDate: moment.Moment | null | undefined, startDate: moment.Moment | null | undefined, userId: number | null | undefined, filterType: ServiceProxy.FilterType2 | null | undefined, sorting: string | null | undefined, skipCount: number | null | undefined, maxResultCount: number | null | undefined): Observable<ServiceProxy.PagedResultDtoOfGetAllMyTasksOutput> {
+        return this._userProfileService.getAllTasksWithinRange(DateOnlyUtility.outgoing(endDate) as any, DateOnlyUtility.outgoing(startDate) as any, userId, filterType, sorting, skipCount, maxResultCount).pipe(map(result => {
+            result.items && result.items.forEach(item => {
+                MyTaskDtoDateOnly.incoming(item.task);
+            });
+            return result;
+        }));
+    }
+
+    getMyUtilization(userId: number | null | undefined, type: string | null | undefined, startDate: moment.Moment | null | undefined, endDate: moment.Moment | null | undefined): Observable<ServiceProxy.MyUtilizationDto> {
+        return this._userProfileService.getMyUtilization(userId, type, DateOnlyUtility.outgoing(endDate) as any, DateOnlyUtility.outgoing(startDate) as any).pipe(map(result => {
+            return result;
+        }));
+    }
+}
+
+@Injectable()
+export class RaidRisksDateOnlyService{
+    constructor(
+        private _raidService: ServiceProxy.RaidRisksServiceProxy
+    ){
+        
+    }
+
+    getAllForUserProfile(filter: string | null | undefined, projectId: number | null | undefined, statusFilter: ServiceProxy.StatusFilter4 | null | undefined, sorting: string | null | undefined, skipCount: number | null | undefined, maxResultCount: number | null | undefined): Observable<ServiceProxy.PagedResultDtoOfGetAllRaidRisksOutput> {
+        return this._raidService.getAllForUserProfile(filter, projectId, statusFilter, sorting, skipCount, maxResultCount).pipe(map(result => {
+            result.items && result.items.forEach(item => {
+                item && item.raidRisk && RaidRiskDtoDateOnly.incoming(item.raidRisk);
+            });
+            return result;
+        }));
+    }
+}
+
+@Injectable()
+export class ProjectBudgetDateOnlyService{
+    constructor(
+        private _projectBudgetService: ServiceProxy.ProjectBudgetsServiceProxy
+    ){
+        
+    }
+
+    createOrEdit(input: ServiceProxy.CreateOrEditProjectBudgetDto | null | undefined): Observable<void>{
+        CreateOrEditProjectBudgetDtoDateOnly.outgoing(input);
+        return this._projectBudgetService.createOrEdit(input);
+    }
+
+    getProjectBudgetForEdit(id: number | null | undefined): Observable<ServiceProxy.GetProjectBudgetForEditOutput>{
+        return this._projectBudgetService.getProjectBudgetForEdit(id).pipe(map(result => {
+            CreateOrEditProjectBudgetDtoDateOnly.incoming(result.projectBudget);
+            return result;
+        }));
+    }
+}
+
+@Injectable()
+export class ProjectBudgetsSpendItemDateOnlyService{
+    constructor(
+        public _projectBudgetsSpendItemServiceProxy: ServiceProxy.ProjectBudgetsSpendItemServiceProxy
+    ){
+
+    }
+
+    getProjectBudgetSpendItemForEdit(id: number | null | undefined): Observable<ServiceProxy.GetProjectBudgetSpendItemForEditOutput>{
+        return this._projectBudgetsSpendItemServiceProxy.getProjectBudgetSpendItemForEdit(id).pipe(map(result => {
+            GetProjectBudgetSpendItemForEditOutputDateOnly.incoming(result);
+            CreateOrEditProjectBudgetSpendItemDtoDateOnly.incoming(result.projectBudgetSpendItem);
+            return result;
+        }));
+    }
+}
